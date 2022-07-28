@@ -1,0 +1,50 @@
+// code related to Section 3.4: A minimal non-spatial model
+
+initialize() {
+	setSeed(314159); // set seed to make results reproducible
+	initializeMutationRate(0.0);
+	
+	initializeMutationType("m1", 0.5, "f", 0.0);
+	
+	initializeGenomicElementType("g1", m1, 1.0);
+
+	initializeGenomicElement(g1, 0, 99999);
+	initializeRecombinationRate(0.0);
+	
+	defineConstant("migration_rate", 0.07); 
+}
+
+// create a population of 40000 individuals
+1 early() {
+	sim.addSubpop("p1", 40000);
+	sim.addSubpop("p2", 40000); // dummy migrant population
+	
+	// track genealogical ancestry:
+	p1.individuals.tagF = 0.0; 
+	p2.individuals.tagF = 1.0; 
+	
+	// define migration:
+	p1.setMigrationRates(p2, migration_rate);
+}
+
+modifyChild() {
+	// we have 2 parents by default in these simulations
+	child.tagF = mean(c(parent1.tagF, parent2.tagF)); // keep track of genealogical ancestry
+	child.color = colors(child.tagF, "heat");
+	return T; 
+}
+
+
+32 late() {
+	// end of P1, beginning of P2
+	p1.setMigrationRates(p2, 0.0); 
+//	sim.simulationFinished(); 
+	print(mean(p1.individuals.tagF)); // avg ancestry at end of P1
+}
+
+
+49 late() {
+	// end of P2
+	sim.simulationFinished(); 
+}
+
