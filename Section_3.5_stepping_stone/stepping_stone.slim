@@ -1,0 +1,117 @@
+// code related to Section 3.5: Stepping stone model
+
+// to visualise, click the bar chart panel on the Output pane and click "Graph Population Visualisation"
+
+// code to track ancestry in bands, as in thesis, is provided but commented out. 
+
+initialize() {
+	setSeed(314159);
+	initializeMutationRate(0.0);
+	
+	initializeMutationType("m1", 0.5, "f", 0.0);
+	
+	initializeGenomicElementType("g1", m1, 1.0);
+	
+	initializeGenomicElement(g1, 0, 99999);
+	initializeRecombinationRate(0.0);
+	
+	defineConstant("migration_rate", 0.56); 
+	defineConstant("connectedness", 0.22);
+	
+	defineConstant("num_cols", 2);    
+	defineConstant("num_rows", 8);  // roughly in line with proportions of britain
+}
+
+// create British and dummy migrant populations
+1 {
+	panmixia_size = asInteger(40000 / (num_cols * num_rows));
+	for (i in 1:(num_rows * num_cols)) {
+		sim.addSubpop(i, panmixia_size);
+		subpop = sim.subpopulations[i-1];
+		subpop.individuals.tagF = 0.0; 
+	}	
+	
+	// code adapted from SLiM manual section 5.3.3, 5.3.4
+	for (i in 1:num_cols) {
+		for (j in 1:num_rows) {
+			dest_idx = i + (j - 1)*num_cols - 1;		
+			dest_subpop = sim.subpopulations[dest_idx]; 
+			if (i > 1) { // left to right
+				from_subpop = sim.subpopulations[dest_idx-1];
+				dest_subpop.setMigrationRates(from_subpop, connectedness); 
+			}
+			if (i < num_cols) { // right ot left
+				from_subpop = sim.subpopulations[dest_idx+1];
+				dest_subpop.setMigrationRates(from_subpop, connectedness); 
+			}
+			if (j > 1) {
+				from_subpop = sim.subpopulations[dest_idx-num_cols];
+				dest_subpop.setMigrationRates(from_subpop, connectedness); 			
+			}
+			if (j < num_rows) {
+				from_subpop = sim.subpopulations[dest_idx+num_cols];
+				dest_subpop.setMigrationRates(from_subpop, connectedness); 			
+			}
+			
+			// define positions in visualisations (explictly set in late() event):
+			x = ((i-1)/(num_cols-1)) * 0.1 + 0.45;  
+			y = ((j-1)/(num_rows-1)) * 0.7 + 0.23;
+ 
+			dest_subpop.setValue("position", c(x, y));
+			dest_subpop.setValue("scale", 0.3); 
+		}
+	}
+	
+	// add migrant subpopulation (change colour in configureDisplay)
+	sim.addSubpop(asInteger(num_rows * num_cols) + 1, 40000);
+	migrant_subpop = sim.subpopulations[length(sim.subpopulations)-1]; 
+	migrant_subpop.setValue("position", c(0.5, 0.1));
+	migrant_subpop.setValue("scale", 0.2); 	migrant_subpop.configureDisplay(center=migrant_subpop.getValue("position"), scale=0.2, color="white");  
+	migrant_subpop.individuals.tagF = 1.0;
+	for (i in 0:(num_cols-1)) {
+		dest_subpop = sim.subpopulations[i]; 
+		dest_subpop.setMigrationRates(migrant_subpop, migration_rate/num_cols); // migrate equally over horizontal space
+	}
+	
+}
+
+modifyChild() {
+	child.tagF = mean(c(parent1.tagF, parent2.tagF));
+	return T; 
+}
+
+// track ancestry in bands:
+//1 late() {
+//	setwd("/yourdirectory"); 
+//	log = sim.createLogFile("bands_stepping_stone.txt", logInterval=1); 
+//	log.addGeneration(); 
+//	for (i in 1:4) {
+//		log.addCustomColumn(paste0("band_", i), paste0("calculate_band_ancestry_stepstone(", i, ");")); 
+//	}
+//}
+//
+//function (*)calculate_band_ancestry_stepstone(* i) {
+//	subpops = sim.subpopulations[(4*i - 4):(4*i-1)];
+//	return mean(subpops.individuals.tagF); 
+//}
+
+// visualisation
+1: late() {
+	for (subpop in sim.subpopulations) {
+		color = colors(mean(subpop.individuals.tagF), "heat"); 
+		subpop.configureDisplay(center=subpop.getValue("position"), scale=subpop.getValue("scale"), color=color);	
+	}
+}
+
+32 late() {
+	// end of P1, beginning of P2
+	print(mean(sim.subpopulations[0:15].individuals.tagF)); // avg ancestry of British population
+	// set migration rate to 0:
+	c(p1, p2).setMigrationRates(p17, 0.0); 
+}
+
+49 late() {
+	// end of P2
+	sim.simulationFinished();
+}
+
