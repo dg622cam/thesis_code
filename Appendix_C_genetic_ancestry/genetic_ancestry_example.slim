@@ -477,7 +477,7 @@ reproduction() {
 }
 
 
-34 late() {
+34 late() { // end of P1 (+1 generation to give newer migrants with lots of spatial competition a chance to be killed)
 	// track ancestry along chromosome in bands:
 	setwd("/yourdirectory");
 	log_chrom_band_1 = sim.createLogFile("log_chrom_band_1.txt"); 
@@ -498,7 +498,7 @@ reproduction() {
 	sim.simulationFinished(); 
 }
 
-50 late() {
+50 late() { // end of P2
 	sim.simulationFinished();
 }
 
