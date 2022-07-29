@@ -1,0 +1,210 @@
+// example code for generating spread of ancestry in bands figures, as well as figures showing the distribution of ancestry proportions and the tightening of ancestry proportion distributions
+
+// first generation is a dummy generation
+
+initialize() {
+	setSeed(314159); // set seed to make results reproducible
+
+
+	initializeSLiMModelType("nonWF");
+	defineConstant("pop_size", 40000);
+	defineConstant("K", 40000); 
+	defineConstant("S", 0.02); // spatial competition distance (and max mate choice distance)
+	
+	initializeSLiMOptions(dimensionality="xy");
+	initializeMutationRate(0.0);  // don't want any mutations occuring unless explicitly specified
+	
+	initializeMutationType("m2", 0.5, "f", 0.0); // this will act as our marker mutation
+	
+	initializeGenomicElementType("g1", m2, 1.0);
+	initializeGenomicElement(g1, 0, 100000);
+	initializeRecombinationRate(c(0, 1e-8), ends=c(0, 100000)); 
+	
+	m2.convertToSubstitution = F;
+	
+	// spatial competition:
+	initializeInteractionType(1, "xy", reciprocal=T, maxDistance=S*3);
+	i1.setInteractionFunction("n", 3.7, S);
+	
+	// spatial mate choice:
+	initializeInteractionType(2, "xy", reciprocal=T, maxDistance=S);
+
+	if (exists("slimgui")) {
+		defineConstant("migrants_per_generation", 8490);
+	}	
+	
+	defineConstant("num_bands", 6);
+	defineConstant("mean_lifetime", 1.8); 
+	defineConstant("repr_dispersion", 0.8); // s.d.. initially 1.0
+	defineConstant("height_mig_region", 0.8);
+}
+
+function (float)calculate_band_ancestry(* band_no) {
+	// returns average ancestry in that band. if num_bands is 3 then band_no should be 1, 2 or 3
+	lower = ((band_no - 1) / num_bands)*3.9;
+	upper = (band_no / num_bands)*3.9;
+	
+	ys = p1.individuals.spatialPosition[0:(length(p1.individuals.spatialPosition)-1) % 2 != 0];
+	inds = p1.individuals[ys >= lower & ys <= upper];
+	//inds.color = "green";  // just to check we're finding the correct individuals
+	
+	return mean(inds.tagF);
+}
+
+1 early() {
+
+	sim.addSubpop("p1", pop_size);
+	p1.setSpatialBounds(c(0.0, 0.0, 1.0, 3.9)); // make rectangular
+
+	p1.individuals.setSpatialPosition(p1.pointUniform(pop_size)); 
+	
+	p2_size = 50000;
+	sim.addSubpop("p2", p2_size);
+	p2.individuals.setSpatialPosition(p2.pointUniform(p2_size));
+	
+	// set genealogical ancestry values:
+	p1.individuals.tagF = 0.0;
+	p2.individuals.tagF = 1.0; 
+}
+
+2 first() { 
+	// set ages:
+	for (ind in p1.individuals) {
+		draw = runif(1); 
+		if (draw < 0.63) {
+			ind.age = 1;
+		} else {
+			ind.age = 2;		
+		}
+	}
+	// this is roughly the distribution of ages reached if we let the system equilibriate without setting ages, so we start here. 
+}
+
+2: first() {
+	i1.evaluate(p1);
+}
+
+2:33 first() {
+	// select parents who will migrate in current generation
+	//i1.evaluate(); 	
+	
+	p2.individuals.tag = 0; // i.e. by default, don't clone
+	
+	
+	from_p2 = p2.individuals[0:(migrants_per_generation-1)]; 
+	from_p2.tag = 1; // i.e. these will be selected to migrate in late event
+}
+
+
+reproduction() {
+	if (!(sim.generation >= 2 & subpop == p2)) {
+		mate = i2.nearestNeighbors(individual, 3);
+		//if (mate.size() == 0) print("zero"); 
+		if (!mate.size()) {
+			return;
+		}
+		mate = sample(mate, 1);
+		
+		for (i in seqLen(rpois(1, 1.0))) {
+ 
+			offspring = subpop.addCrossed(individual, mate);
+			offspring.tagF = mean(c(individual, mate).tagF);
+			
+			// reprising BCs: 
+			do pos = individual.spatialPosition + rnorm(2, 0, repr_dispersion); //add more dispersion to allow ancestry to spread more (without much more computational expense)
+			while (!p1.pointInBounds(pos));
+			offspring.setSpatialPosition(pos); 
+		
+		}
+	} else {
+		if (individual.tag == 1) {
+			offspring = p2.addCloned(individual);
+			offspring.setSpatialPosition(individual.spatialPosition);
+			offspring.tag = 0; // i.e. don't clone		
+			offspring.tagF = 1.0; // i.e. part of migrant population
+		}
+	}
+}
+
+1: early () {
+	// fitness scaling according to spatial competition:
+	i1.evaluate(p1); // re-evaluate since reproduction has occured in this generation
+	
+	inds = p1.individuals;
+	competition = i1.totalOfNeighborStrengths(inds);
+	competition = (competition + 1) / (2*PI*S^2);
+	
+
+	ys = p1.individuals.spatialPosition[seqLen(2*p1.individualCount) % 2 != 0.0]; 
+	
+	spatialFactor = rep(1.0, p1.individualCount); 
+	dist = 0.4;
+	idxs = ys <= dist | ys >= 3.9 - dist;
+	spatialFactor[idxs] = 1.15; 
+	
+	inds.fitnessScaling = (1 / (1+(competition/(K*(1+mean_lifetime))))) * spatialFactor;
+
+}
+
+1 survival(p1) {
+	return T; 
+}
+
+1: survival(p2) {
+	return T;
+}
+
+2: survival(p1) {
+	if (individual.age == 2) return F; 
+	return NULL; 
+}
+
+
+1: late() {
+	i2.evaluate(p1);
+	p1.individuals.color = colors(p1.individuals.tagF, "heat");
+}
+
+2 late() {
+	// store ancestry bands:
+	setwd("/yourdirectory"); 
+	log = sim.createLogFile("bands.txt", logInterval=1); 
+	log.addCustomColumn("effective_generation", "sim.generation-1;"); 
+	for (i in 1:num_bands) {
+		log.addCustomColumn(paste0("band", i), paste0("calculate_band_ancestry(", i, ");"));
+	}
+}
+
+2:33 late() { 
+	// migrate individuals chosen in first() event 
+	
+	from_p2 = p2.individuals[p2.individuals.tag == 1];
+	
+	if (from_p2.size()) {
+		
+		// and now we migrate the parents:
+		p1.takeMigrants(from_p2);
+		from_p2.color = colors(from_p2.tagF, "heat");
+		xs = runif(from_p2.size()); ys = runif(from_p2.size(), min=0.0, max=height_mig_region); // add in narrow band
+		from_p2.setSpatialPosition(rbind(xs, ys));
+		from_p2.age = 1; 
+	}
+	i2.evaluate(p1); // re-evaluate given that we've changed the population
+	
+	// set color:
+	//p1.individuals.color = colors(p1.individuals.)... 
+}
+
+// investigate variance:
+33: late() {
+	writeFile(paste0("/yourdirectory/inds_eff_gen_", sim.generation-1, ".txt"), contents=asString(p1.individuals.tagF));
+}
+
+34 late() {
+	cat(c("avg ancestry", mean(p1.individuals.tagF))); 
+	//sim.simulationFinished(); 
+}
+
+50 late() {
+	sim.simulationFinished(); 
+}
