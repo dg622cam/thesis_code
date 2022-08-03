@@ -1,0 +1,500 @@
+// code for Appendix E.3 (example demonstrating spread of genetic ancestry)
+// first generation is a dummy generation
+// visualisation is automatic in SLiMgui
+initialize() {
+	setSeed(314159); // set seed to make results reproducible
+	
+	
+	initializeSLiMModelType("nonWF");
+	defineConstant("pop_size", 40000);
+	defineConstant("K", 40000);
+	defineConstant("S", 0.02); // spatial competition distance (and max mate choice distance)
+	
+	initializeSLiMOptions(dimensionality="xy");
+	initializeMutationRate(0.0);  // don't want any mutations occuring unless explicitly specified
+	
+	// marker mutations:
+	initializeMutationType("m11", 0.5, "f", 0.0); 
+	initializeMutationType("m12", 0.5, "f", 0.0);
+	initializeMutationType("m21", 0.5, "f", 0.0);
+	initializeMutationType("m22", 0.5, "f", 0.0);
+	
+	initializeMutationType("m50", 0.5, "f", -0.8);  // deleterious allele for this example
+	
+	initializeGenomicElementType("g1", c(m11, m12, m21, m22, m50), c(1.0, 1.0, 1.0, 1.0, 1.0));
+	
+	
+	// spatial competition:
+	initializeInteractionType(1, "xy", reciprocal=T, maxDistance=S*3);
+	i1.setInteractionFunction("n", 3.7, S);
+	
+	// spatial mate choice:
+	initializeInteractionType(2, "xy", reciprocal=T, maxDistance=S);
+	
+	if (exists("slimgui")) {
+		defineConstant("migrants_per_generation", 8490);
+	}
+	
+	defineConstant("mean_lifetime", 1.8);
+	defineConstant("repr_dispersion", 0.8); // s.d. of normal distribution
+	defineConstant("height_mig_region", 0.8);
+	defineConstant("num_bands", 6);	
+	defineConstant("shortening_factor", 10^5); // factor used to shorten chromosome and increase recomb. rate
+	
+	defineConstant("length_chrom", asInteger((10^8)/shortening_factor));
+	initializeGenomicElement(g1, 0, length_chrom);
+	initializeRecombinationRate(c(0, 1e-8 * shortening_factor), ends=c(2, length_chrom)); // 0th position is reserved for this marker mutation
+	
+	c(m11, m12, m21, m22).convertToSubstitution = F;
+}
+
+// function definitions: 
+function (float)value_to_right_of_pos(* breakpoints, float values, integer point) {
+	if (!length(breakpoints)) {
+		return values; // should be only one element in values
+	}
+	if (!any(breakpoints == point)) {
+		vec = asFloat(c(breakpoints, point));
+	} else {
+		vec = asFloat(c(breakpoints));
+	}
+	order = order(vec);
+	idx = which(sort(vec) == point);
+	if (!any(breakpoints == point)) {
+		value = values[idx];
+	} else {
+		value = values[idx + 1];
+	}
+	
+	return value;
+}
+
+function (*)get_new_breakpoints_values(* parent_genome_breakpoints, * parent_genome_values, * other_genome_breakpoints, * other_genome_values, * new_breakpoints) {
+	
+	// if there are repeats, remove them both (as this is equivalent to switching and switching back):
+	shared_breakpoints = F;
+	shared_breakpoints_vec = c();
+	if ((!isNULL(parent_genome_breakpoints)) & (!isNULL(other_genome_breakpoints))) {
+		// check for shared breakpoints:
+		for (breakpoint in parent_genome_breakpoints) {
+			if (any(other_genome_breakpoints == breakpoint)) {
+				shared_breakpoints = T;
+				shared_breakpoints_vec = c(shared_breakpoints_vec, breakpoint);
+			}
+		}
+	}
+	
+	
+	
+	all_breakpoints_sorted = sort(c(parent_genome_breakpoints, other_genome_breakpoints, new_breakpoints));
+	
+	out_values = c(parent_genome_values[0]);
+	out_breakpoints = c();
+	curr_pos = 1; // base 1 in parent genome (0 is reserved for marker mutation)
+	
+	breakpoints_dict = Dictionary("parent", parent_genome_breakpoints, "other", other_genome_breakpoints);
+	values_dict = Dictionary("parent", parent_genome_values, "other", other_genome_values);
+	
+	curr_genome = 0; // corresponding to starting parental genome
+	
+	curr_breakpoint_right = all_breakpoints_sorted[0];
+	
+	i = 0;
+	finished = F;
+	while (T) {
+		// move from left to right
+		
+		
+		if (any(curr_breakpoint_right == new_breakpoints)) {
+			// then switch genomes, unless shared breakpoint
+			if (shared_breakpoints){
+				if (any(shared_breakpoints_vec == curr_breakpoint_right)) {
+					curr_genome = 1 - curr_genome;  // i.e. do the flipping of genomes twice				
+				}
+			}
+			curr_genome = 1 - curr_genome;
+		}
+		
+		identifier = ifelse(curr_genome == 0, "parent", "other");
+		
+		curr_genome_breakpoints = breakpoints_dict.getValue(identifier);
+		curr_genome_values = values_dict.getValue(identifier);
+		
+		curr_value = value_to_right_of_pos(curr_genome_breakpoints, curr_genome_values, curr_breakpoint_right);
+		out_values = c(out_values, curr_value);
+		out_breakpoints = c(out_breakpoints, curr_breakpoint_right);
+		
+		
+		// choose next breakpoint, but ignore if it's on the other genome
+		j = 0;
+		while (T) {
+			j = j+1;
+			//print(j); 
+			new_idx = which(all_breakpoints_sorted == curr_breakpoint_right) + 1;
+			if (length(new_idx) > 1) {
+				// i.e. shared breakpoint				
+				new_idx = new_idx[length(new_idx)-1];
+			}
+			if (new_idx == length(all_breakpoints_sorted)) {
+				finished = T;
+				break;
+			}
+			curr_breakpoint_right = all_breakpoints_sorted[new_idx];
+			
+			
+			// check if we've found the correct next breakpoint:
+			if (!isNULL(curr_genome_breakpoints)) {
+				if (any(curr_breakpoint_right == curr_genome_breakpoints)) {
+					break;
+				}
+			}
+			if (any(curr_breakpoint_right == new_breakpoints)) {
+				break;
+			}
+		}
+		if (finished) {
+			break;
+		}
+	}
+	
+	// now simplify output: 
+	new_out_breakpoints = c();
+	new_out_values = c(out_values[0]);
+	for (i in 1:(length(out_values)-1)) {
+		val = out_values[i];
+		right_breakpoint = out_breakpoints[i-1];
+		if (val == new_out_values[length(new_out_values)-1]) next;
+		new_out_values = c(new_out_values, val);
+		new_out_breakpoints = c(new_out_breakpoints, right_breakpoint);
+	}
+	return Dictionary("breakpoints", new_out_breakpoints, "values", new_out_values);
+}
+
+function (*)calculate_genetic_ancestry(* breakpoints, * values) {
+	// the positions specified in breakpoints mean that crossover will occur immediately before the specified base position
+	if (!length(breakpoints)) return values; // values should be of length 1
+	
+	chromosome_end = length_chrom; // set in initializeGenomicElement
+	sum = 0;
+	for (i in 0:(length(breakpoints)-1)) {
+		if (i == 0) {
+			chunk_length = breakpoints[i]-2;
+		} else {
+			chunk_length = breakpoints[i] - breakpoints[i-1];
+		}
+		sum = sum + chunk_length * values[i];
+	}
+	// then add final chunk to right:
+	sum = sum + (chromosome_end - breakpoints[length(breakpoints)-1]) * values[length(values)-1];
+	return sum/chromosome_end;
+}
+
+function (*) calculate_genetic_ancestry_individual(* individual) {
+	ga_chrom1 = calculate_genetic_ancestry(individual.getValue("genome 1 ancestry breakpoints"), individual.getValue("genome 1 ancestry values"));
+	ga_chrom2 = calculate_genetic_ancestry(individual.getValue("genome 2 ancestry breakpoints"), individual.getValue("genome 2 ancestry values"));
+	return mean(c(ga_chrom1, ga_chrom2));
+}
+
+function (*)calculate_band_ancestry_genetic_at_point(* band_no, * base) {
+
+	lower = (band_no - 1) / num_bands; 
+	upper = band_no / num_bands; 
+	
+	ys = p1.individuals.spatialPosition[0:(length(p1.individuals.spatialPosition)-1) % 2 != 0];
+	
+	inds = p1.individuals[ys >= lower & ys <= upper];
+	
+	tot = 0.0; 
+	for (ind in inds) {
+		tot = tot + value_to_right_of_pos(ind.getValue("genome 1 ancestry breakpoints"), ind.getValue("genome 1 ancestry values"), base-1);
+		tot = tot + value_to_right_of_pos(ind.getValue("genome 2 ancestry breakpoints"), ind.getValue("genome 2 ancestry values"), base-1); 
+	}
+	return tot / (2*length(inds)); // times 2 since diploid
+	
+}
+
+1 early() {
+	
+	sim.addSubpop("p1", pop_size);
+	p1.setSpatialBounds(c(0.0, 0.0, 1.0, 3.9)); // make rectangular
+	
+	p1.individuals.setSpatialPosition(p1.pointUniform(pop_size));
+	
+	p2_size = 50000;
+	sim.addSubpop("p2", p2_size);
+	p2.individuals.setSpatialPosition(p2.pointUniform(p2_size));
+	
+	// SLiM doesn't let you do setValue on genome so do it on individuals instead
+	p1.individuals.setValue("genome 1 ancestry breakpoints", c());
+	p1.individuals.setValue("genome 1 ancestry values", c(0.0));
+	p1.individuals.setValue("genome 2 ancestry breakpoints", c());
+	p1.individuals.setValue("genome 2 ancestry values", c(0.0));
+	
+	p2.individuals.setValue("genome 1 ancestry breakpoints", c());
+	p2.individuals.setValue("genome 1 ancestry values", c(1.0));
+	p2.individuals.setValue("genome 2 ancestry breakpoints", c());
+	p2.individuals.setValue("genome 2 ancestry values", c(1.0));
+
+	// add deleterious allele:
+	p2.individuals.genomes.addNewDrawnMutation(m50, asInteger(length_chrom)); 
+}
+
+2 first() {
+	// set ages:
+	for (ind in p1.individuals) {
+		draw = runif(1);
+		if (draw < 0.63) {
+			ind.age = 1;
+		} else {
+			ind.age = 2;
+		}
+	}
+	// this is roughly the distribution of ages reached if we let the system equilibriate without setting ages, so we start here. 
+}
+
+2: first() {
+	i1.evaluate(p1);
+}
+
+2:33 first() {
+	// select parents who will migrate in current generation
+	//i1.evaluate(); 	
+	
+	p2.individuals.tag = 0; // i.e. by default, don't clone
+	
+	
+	from_p2 = p2.individuals[0:(migrants_per_generation-1)];
+	from_p2.tag = 1; // i.e. these will be selected to migrate in late event
+}
+
+
+reproduction() {
+	if (!(sim.generation >= 2 & subpop == p2)) {
+		mate = i2.nearestNeighbors(individual, 3);
+		//if (mate.size() == 0) print("zero"); 
+		if (!mate.size()) {
+			return;
+		}
+		mate = sample(mate, 1);
+		
+		for (i in seqLen(rpois(1, 1.0))) {
+			
+			// get genetic ancestry of each genome of each parent:
+			individual_genome_1_ancestry_breakpoints = individual.getValue("genome 1 ancestry breakpoints");
+			individual_genome_1_ancestry_values = individual.getValue("genome 1 ancestry values");
+			individual_genome_2_ancestry_breakpoints = individual.getValue("genome 2 ancestry breakpoints");
+			individual_genome_2_ancestry_values = individual.getValue("genome 2 ancestry values");
+			
+			mate_genome_1_ancestry_breakpoints = mate.getValue("genome 1 ancestry breakpoints");
+			mate_genome_1_ancestry_values = mate.getValue("genome 1 ancestry values");
+			mate_genome_2_ancestry_breakpoints = mate.getValue("genome 2 ancestry breakpoints");
+			mate_genome_2_ancestry_values = mate.getValue("genome 2 ancestry values");
+			
+			// set marker mutations for genomes 1 and 2 of individual and mate
+			//c(individual, mate).genomes.removeMutations();			
+			
+			// add marker mutation at 0th position:
+			individual.genome1.addNewMutation(m11, 0.0, 0);
+			individual.genome2.addNewMutation(m12, 0.0, 0);
+			mate.genome1.addNewMutation(m21, 0.0, 0);
+			mate.genome2.addNewMutation(m22, 0.0, 0);
+			
+			offspring = subpop.addCrossed(individual, mate);
+			
+			// reprising BCs: 
+			do pos = individual.spatialPosition + rnorm(2, 0, repr_dispersion); //add more dispersion to allow ancestry to spread more (without much more computational expense)
+			while (!p1.pointInBounds(pos));
+			offspring.setSpatialPosition(pos);
+			
+			
+			// which marker mutations are present? 			
+			mut1_idx = c(offspring.genome1.containsMarkerMutation(m11, 0), offspring.genome1.containsMarkerMutation(m12, 0), offspring.genome1.containsMarkerMutation(m21, 0), offspring.genome1.containsMarkerMutation(m22, 0));
+			mut2_idx = c(offspring.genome2.containsMarkerMutation(m11, 0), offspring.genome2.containsMarkerMutation(m12, 0), offspring.genome2.containsMarkerMutation(m21, 0), offspring.genome2.containsMarkerMutation(m22, 0));
+			
+			
+			if (individual.getValue("recombination happened")) {
+
+				breakpoints = individual.getValue("breakpoints");
+				// add to ancestry breakpoints
+				if (offspring.genome1.containsMarkerMutation(m11, 0)) {
+					// 2 steps: add to breakpoints and values, then simplify if possible
+					parent_ancestry_breakpoints = individual_genome_1_ancestry_breakpoints;
+					parent_ancestry_values = individual_genome_1_ancestry_values;
+					other_ancestry_breakpoints = individual_genome_2_ancestry_breakpoints;
+					other_ancestry_values = individual_genome_2_ancestry_values;
+					// need to combine these 4 above using breakpoints 
+					//print("m11"); 
+				
+				} else if (offspring.genome1.containsMarkerMutation(m12, 0)) {
+					parent_ancestry_breakpoints = individual_genome_2_ancestry_breakpoints;
+					parent_ancestry_values = individual_genome_2_ancestry_values;
+					other_ancestry_breakpoints = individual_genome_1_ancestry_breakpoints;
+					other_ancestry_values = individual_genome_1_ancestry_values;
+					//print("m12"); 
+				}
+				genome_1_result = get_new_breakpoints_values(parent_ancestry_breakpoints, parent_ancestry_values, other_ancestry_breakpoints, other_ancestry_values, breakpoints); // given as a dictionary
+				genome_1_ancestry_breakpoints = genome_1_result.getValue("breakpoints");
+				genome_1_ancestry_values = genome_1_result.getValue("values");
+			} else {
+				if (mut1_idx[0]) {
+					genome_1_ancestry_breakpoints = individual_genome_1_ancestry_breakpoints;
+					genome_1_ancestry_values = individual_genome_1_ancestry_values;
+				} else if (mut1_idx[1]) {
+					genome_1_ancestry_breakpoints = individual_genome_2_ancestry_breakpoints;
+					genome_1_ancestry_values = individual_genome_2_ancestry_values;
+				}
+			}
+			if (mate.getValue("recombination happened")) {
+				breakpoints = mate.getValue("breakpoints");
+				// check which marker mutation is present:
+				if (offspring.genome2.containsMarkerMutation(m21, 0)) {
+					parent_ancestry_breakpoints = mate_genome_1_ancestry_breakpoints;
+					parent_ancestry_values = mate_genome_1_ancestry_values;
+					other_ancestry_breakpoints = mate_genome_2_ancestry_breakpoints;
+					other_ancestry_values = mate_genome_2_ancestry_values;
+				} else if (offspring.genome2.containsMarkerMutation(m22, 0)) {
+					parent_ancestry_breakpoints = mate_genome_2_ancestry_breakpoints;
+					parent_ancestry_values = mate_genome_2_ancestry_values;
+					other_ancestry_breakpoints = mate_genome_1_ancestry_breakpoints;
+					other_ancestry_values = mate_genome_1_ancestry_values;
+				}
+				genome_2_result = get_new_breakpoints_values(parent_ancestry_breakpoints, parent_ancestry_values, other_ancestry_breakpoints, other_ancestry_values, breakpoints);
+				genome_2_ancestry_breakpoints = genome_2_result.getValue("breakpoints");
+				genome_2_ancestry_values = genome_2_result.getValue("values");
+			
+			
+			} else {
+				if (mut2_idx[2]) {
+					genome_2_ancestry_breakpoints = mate_genome_1_ancestry_breakpoints;
+					genome_2_ancestry_values = mate_genome_1_ancestry_values;
+				} else if (mut2_idx[3]) {
+					genome_2_ancestry_breakpoints = mate_genome_2_ancestry_breakpoints;
+					genome_2_ancestry_values = mate_genome_2_ancestry_values;
+				}
+			}
+			
+			
+			//print(offspring.genome2.mutations.mutationType); // to see which parent genome2 comes from (it comes from mate)
+			
+			offspring.setValue("genome 1 ancestry breakpoints", genome_1_ancestry_breakpoints);
+			offspring.setValue("genome 1 ancestry values", genome_1_ancestry_values);
+			offspring.setValue("genome 2 ancestry breakpoints", genome_2_ancestry_breakpoints);
+			offspring.setValue("genome 2 ancestry values", genome_2_ancestry_values);
+		
+		}
+	} else {
+		if (individual.tag == 1) {
+			offspring = p2.addCloned(individual);
+			offspring.setSpatialPosition(individual.spatialPosition);
+			offspring.tag = 0; // i.e. don't clone
+			offspring.setValue("genome 1 ancestry breakpoints", c());
+			offspring.setValue("genome 1 ancestry values", c(1.0));
+			offspring.setValue("genome 2 ancestry breakpoints", c());
+			offspring.setValue("genome 2 ancestry values", c(1.0));
+			
+			offspring.setSpatialPosition(individual.spatialPosition);
+		}
+	}
+}
+
+2: recombination(p1) {
+	// track breakpoints
+	if (!size(breakpoints)) {
+		individual.setValue("recombination happened", F); // track whether or not recombination occured.
+		return F;
+	}
+	individual.setValue("recombination happened", T);
+	individual.setValue("breakpoints", breakpoints); // store to call in reproduction() callback
+	
+	return F; // i.e. don't alter SLiM's default breakpoint choice
+}
+
+1: early () {
+	// fitness scaling according to spatial competition:
+	i1.evaluate(p1); // re-evaluate since reproduction has occured in this generation
+	
+	inds = p1.individuals;
+	competition = i1.totalOfNeighborStrengths(inds);
+	competition = (competition + 1) / (2*PI*S^2);
+	
+	
+	ys = p1.individuals.spatialPosition[seqLen(2*p1.individualCount) % 2 != 0.0];
+	
+	spatialFactor = rep(1.0, p1.individualCount);
+	dist = 0.4;
+	idxs = ys <= dist | ys >= 3.9 - dist;
+	spatialFactor[idxs] = 1.15;
+	
+	inds.fitnessScaling = (1 / (1+(competition/(K*(1+mean_lifetime))))) * spatialFactor;
+
+}
+
+1 survival(p1) {
+	return T;
+}
+
+1: survival(p2) {
+	return T;
+}
+
+2: survival(p1) {
+	if (individual.age == 2) return F;
+	return NULL;
+}
+
+
+1: late() {
+	i2.evaluate(p1);
+	//p1.individuals.color = colors(p1.individuals.tagF, "heat");
+	
+	// set color: 
+	for (ind in p1.individuals) {
+		ind.color = colors(calculate_genetic_ancestry_individual(ind), "heat"); 
+	}
+}
+
+2:33 late() {
+	// migrate individuals chosen in first() event 
+	
+	from_p2 = p2.individuals[p2.individuals.tag == 1];
+	
+	if (from_p2.size()) {
+		
+		// and now we migrate the parents:
+		p1.takeMigrants(from_p2);
+		from_p2.color = colors(1.0, "heat");
+		xs = runif(from_p2.size()); ys = runif(from_p2.size(), min=0.0, max=height_mig_region); // add in narrow band
+		from_p2.setSpatialPosition(rbind(xs, ys));
+		from_p2.age = 1;
+	}
+	i2.evaluate(p1); // re-evaluate given that we've changed the population
+	
+	// set color:
+	//p1.individuals.color = colors(p1.individuals.)... 
+}
+
+
+34 late() { // end of P1 (+1 generation to give newer migrants with lots of spatial competition a chance to be killed)
+	// track ancestry along chromosome in bands:
+	setwd("/yourdirectory");
+	log_chrom_band_1 = sim.createLogFile("log_chrom_band_1.txt"); 
+	log_chrom_band_1.addGeneration(); 
+	for (i in 1:length_chrom) {
+		log_chrom_band_1.addCustomColumn(paste0("base", i), paste0("calculate_band_ancestry_genetic_at_point(1,", i, ");"));	
+	}
+	log_chrom_band_1.logRow(); 
+	
+	log_chrom_band_6 = sim.createLogFile("log_chrom_band_6.txt"); 
+	log_chrom_band_6.addGeneration(); 
+	for (i in 1:length_chrom) {
+		log_chrom_band_6.addCustomColumn(paste0("base", i), paste0("calculate_band_ancestry_genetic_at_point(6,", i, ");"));	
+	}
+	log_chrom_band_6.logRow(); 
+		
+	
+	sim.simulationFinished(); 
+}
+
+50 late() { // end of P2
+	sim.simulationFinished();
+}
