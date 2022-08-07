@@ -153,6 +153,7 @@ reproduction() {
 
 // define bottleneck event and print number of individuals killed specifically by bottleneck:
 10 survival(p1) {
+	if (individual.age == 2) return F; 
 	if (individual.spatialPosition[1] >= 3.0) {
 		// give them a new fitness
 		fitnessNew = fitness * fitness_scaling; 
