@@ -1,0 +1,203 @@
+// code related to Section 3.8: Second continuous spatial model: population bottleneck
+// first generation is a dummy generation
+// visualisationn is automatic in SLiMgui
+initialize() {
+	setSeed(314159); // set seed to make results reproducible
+
+
+	initializeSLiMModelType("nonWF");
+	defineConstant("pop_size", 40000);
+	defineConstant("K", 40000); 
+	defineConstant("S", 0.02); // spatial competition distance (and max mate choice distance)
+	
+	initializeSLiMOptions(dimensionality="xy");
+	initializeMutationRate(0.0);  // don't want any mutations occuring unless explicitly specified
+	
+	initializeMutationType("m2", 0.5, "f", 0.0); 
+	
+	initializeGenomicElementType("g1", m2, 1.0);
+	initializeGenomicElement(g1, 0, 100000);
+	initializeRecombinationRate(c(0, 1e-8), ends=c(0, 100000)); 
+	
+	m2.convertToSubstitution = F;
+	
+	// spatial competition:
+	initializeInteractionType(1, "xy", reciprocal=T, maxDistance=S*3);
+	i1.setInteractionFunction("n", 3.7, S);
+	
+	// spatial mate choice:
+	initializeInteractionType(2, "xy", reciprocal=T, maxDistance=S);
+	
+	if (exists("slimgui")) {
+		defineConstant("migrants_per_generation", 7560);
+	}	
+	
+	defineConstant("mean_lifetime", 1.8); 
+	defineConstant("repr_dispersion", 0.8); // s.d. of normal distribution
+	defineConstant("height_mig_region", 0.8);
+	defineConstant("fitness_scaling", 0.2); // this is the param lambda related to the bottleneck event
+}
+
+1 early() {
+	sim.addSubpop("p1", pop_size);
+	p1.setSpatialBounds(c(0.0, 0.0, 1.0, 3.9)); // make rectangular
+	
+	p1.individuals.setSpatialPosition(p1.pointUniform(pop_size)); 
+	
+	p2_size = 50000;
+	sim.addSubpop("p2", p2_size);
+	p2.individuals.setSpatialPosition(p2.pointUniform(p2_size));
+	
+	// set genealogical ancestry values:
+	p1.individuals.tagF = 0.0;
+	p2.individuals.tagF = 1.0; 
+}
+
+2 first() { 
+	// set ages:
+	for (ind in p1.individuals) {
+		draw = runif(1); 
+		if (draw < 0.63) {
+			ind.age = 1;
+		} else {
+			ind.age = 2;		
+		}
+	}
+	// this is roughly the distribution of ages reached if we let the system equilibriate without setting ages, so we start here. 
+}
+
+2: first() {
+	i1.evaluate(p1);
+}
+
+2:33 first() {
+	// select parents who will migrate in current generation
+	//i1.evaluate(); 	
+	
+	p2.individuals.tag = 0; // i.e. by default, don't clone
+	
+	
+	from_p2 = p2.individuals[0:(migrants_per_generation-1)]; 
+	from_p2.tag = 1; // i.e. these will be selected to migrate in late event
+}
+
+
+reproduction() {
+	if (!(sim.generation >= 2 & subpop == p2)) {
+		mate = i2.nearestNeighbors(individual, 3);
+		//if (mate.size() == 0) print("zero"); 
+		if (!mate.size()) {
+			return;
+		}
+		mate = sample(mate, 1);
+		
+		for (i in seqLen(rpois(1, 1.0))) {
+
+			offspring = subpop.addCrossed(individual, mate);
+			offspring.tagF = mean(c(individual, mate).tagF);
+			
+			// reprising BCs: 
+			do pos = individual.spatialPosition + rnorm(2, 0, repr_dispersion); //add more dispersion to allow ancestry to spread more (without much more computational expense)
+			while (!p1.pointInBounds(pos));
+			offspring.setSpatialPosition(pos); 
+		
+		}
+	} else {
+		if (individual.tag == 1) {
+			offspring = p2.addCloned(individual);
+			offspring.setSpatialPosition(individual.spatialPosition);
+			offspring.tag = 0; // i.e. don't clone		
+			offspring.tagF = 1.0; // i.e. part of migrant population
+		}
+	}
+}
+
+1: early () {
+	// fitness scaling according to spatial competition:
+	i1.evaluate(p1); // re-evaluate since reproduction has occured in this generation
+	
+	inds = p1.individuals;
+	competition = i1.totalOfNeighborStrengths(inds);
+	competition = (competition + 1) / (2*PI*S^2);
+	
+
+	ys = p1.individuals.spatialPosition[seqLen(2*p1.individualCount) % 2 != 0.0]; 
+	
+	spatialFactor = rep(1.0, p1.individualCount); 
+	dist = 0.4;
+	idxs = ys <= dist | ys >= 3.9 - dist;
+	spatialFactor[idxs] = 1.15; 
+	
+	inds.fitnessScaling = (1 / (1+(competition/(K*(1+mean_lifetime))))) * spatialFactor;
+}
+
+1 survival(p1) { // dummy generation
+	return T; 
+}
+
+1: survival(p2) { // dummy population
+	return T;
+}
+
+2: survival(p1) { // age cutoff
+	if (individual.age == 2) return F; 
+	return NULL; 
+}
+
+10 early() {
+	defineGlobal("inds_killed", 0); 
+}
+
+// define bottleneck event and print number of individuals killed specifically by bottleneck:
+10 survival(p1) {
+	if (individual.age == 2) return F; 
+	if (individual.spatialPosition[1] >= 3.0) {
+		// give them a new fitness
+		fitnessNew = fitness * fitness_scaling; 
+		if (draw <= fitnessNew) {
+			return T; 		
+		}
+		inds_killed = inds_killed + 1; 
+		return F;
+	}
+	return NULL;
+}
+10 late() {
+	print(inds_killed);
+}
+
+
+1: late() {
+	i2.evaluate(p1);
+	p1.individuals.color = colors(p1.individuals.tagF, "heat");
+}
+
+2:33 late() { 
+	// migrate individuals chosen in first() event 
+	
+	from_p2 = p2.individuals[p2.individuals.tag == 1];
+	
+	if (from_p2.size()) {
+		
+		// and now we migrate the parents:
+		p1.takeMigrants(from_p2);
+		from_p2.color = colors(from_p2.tagF, "heat");
+		xs = runif(from_p2.size()); ys = runif(from_p2.size(), min=0.0, max=height_mig_region); // add in narrow band
+		from_p2.setSpatialPosition(rbind(xs, ys));
+		from_p2.age = 1; 
+	}
+	i2.evaluate(p1); // re-evaluate given that we've changed the population
+	
+	// set color:
+	//p1.individuals.color = colors(p1.individuals.)... 
+}
+
+
+34 late() { // end of P1 (+1 generation to give newer migrants with lots of spatial competition a chance to be killed)
+	print(mean(p1.individuals.tagF)); 
+//	sim.simulationFinished(); 
+}
+
+50 late() { // end of P2
+	sim.simulationFinished(); 
+}
